@@ -25,6 +25,7 @@
 #endif
 
 #include "Audio.h"
+#include "VoiceActingManager.h"
 #include "Face_stats.h"
 #include "Gump.h"
 #include "Gump_manager.h"
@@ -598,7 +599,58 @@ void Usecode_internal::say_string() {
 		return;
 	}
 	show_pending_text();    // Make sure prev. text was seen.
-	char* str = String;
+	const int voice_func_id = frame ? frame->function->id : -1;
+
+	// Determine the caller NPC from the call stack (who initiated the conversation).
+	// NPC numbers are stored as negative values to match usecode convention
+	// (e.g., -1 = Iolo, -12 = Finnigan, 0 = Avatar).
+	int voice_caller_npc = 0;
+	if (caller_item) {
+		Actor* act = caller_item->as_actor();
+		if (act) {
+			int num = act->get_npc_num();
+			voice_caller_npc = num > 0 ? -num : num;
+		}
+	}
+	if (voice_caller_npc == 0) {
+		// Try the call stack for the original caller.
+		for (auto it = call_stack.rbegin(); it != call_stack.rend(); ++it) {
+			if (*it && (*it)->caller_item) {
+				Actor* act = (*it)->caller_item->as_actor();
+				if (act && act->get_npc_num() > 0) {
+					voice_caller_npc = -act->get_npc_num();
+					break;
+				}
+			}
+		}
+	}
+	// Use the current face NPC as the speaker (tracks show_npc_face calls).
+	// Falls back to caller_npc if no face has been set.
+	const int voice_speaker_npc = voice_current_face_npc != VOICE_NO_FACE
+	                            ? voice_current_face_npc
+	                            : voice_caller_npc;
+
+	// Build the offset key from addsi trace, filtering to only entries
+	// from the current function (ignoring offsets from parent callers).
+	std::string voice_offset_key;
+	for (const auto& [fid, off] : voice_string_trace) {
+		if (fid != voice_func_id) {
+			continue;    // Skip entries from other functions.
+		}
+		if (off == VOICE_TRACE_ADDSV) {
+			continue;    // Skip variable insertions.
+		}
+		if (!voice_offset_key.empty()) {
+			voice_offset_key += "_";
+		}
+		char hexbuf[16];
+		std::snprintf(hexbuf, sizeof(hexbuf), "%x", off);
+		voice_offset_key += hexbuf;
+	}
+	voice_string_trace.clear();
+
+	int  segment = 0;
+	char* str    = String;
 	while (*str) {            // Look for stopping points ("~~").
 		if (*str == '*') {    // Just gets an extra click.
 			click_to_continue();
@@ -607,11 +659,17 @@ void Usecode_internal::say_string() {
 		}
 		char* eol = strchr(str, '~');
 		if (!eol) {    // Not found?
+			VoiceActingManager::play_for_conversation(
+					voice_func_id, voice_offset_key, segment++, str,
+					voice_speaker_npc, voice_caller_npc);
 			conv->show_npc_message(str);
 			click_to_continue();
 			break;
 		}
 		*eol = 0;
+		VoiceActingManager::play_for_conversation(
+				voice_func_id, voice_offset_key, segment++, str,
+				voice_speaker_npc, voice_caller_npc);
 		conv->show_npc_message(str);
 		click_to_continue();
 		str = eol + 1;
@@ -686,6 +744,10 @@ void Usecode_internal::show_npc_face(
 		int            slot     // 0, 1, or -1 to find free spot.
 ) {
 	show_pending_text();
+	// Track the current face NPC for voice acting logging.
+	if (arg1.is_int()) {
+		voice_current_face_npc = arg1.get_int_value();
+	}
 	Actor*    npc;
 	int       frame = arg2.get_int_value();
 	const int shape = get_face_shape(arg1, npc, frame);
@@ -1626,6 +1688,8 @@ void Usecode_internal::click_to_continue() {
 		gwin->paint();    // Repaint scenery.
 		Get_click(xx, yy, Mouse::hand, &c, false, conv, true);
 	}
+	// Stop any voice audio when the player clicks to advance.
+	VoiceActingManager::stop();
 	conv->clear_text_pending();
 	//  user_choice = 0;        // Clear it.
 }
@@ -2144,6 +2208,7 @@ int Usecode_internal::run() {
 					break;
 				}
 				append_string(frame->data + offset);
+				voice_string_trace.push_back({frame->function->id, offset});
 				break;
 			case UC_PUSHS:      // PUSHS.
 			case UC_PUSHS32:    // PUSHS32
@@ -2480,6 +2545,7 @@ int Usecode_internal::run() {
 					LOCAL_VAR_ERROR(offset);
 					break;
 				}
+				voice_string_trace.push_back({frame->function->id, VOICE_TRACE_ADDSV});
 
 				const char* str = frame->locals[offset].get_str_value();
 				if (str) {

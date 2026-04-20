@@ -85,6 +85,14 @@ class Usecode_internal : public Usecode_machine {
 	Tile_coord saved_pos       = {-1, -1, -1};    // For a couple SI intrinsics.
 	int        saved_map       = -1;              // Improvements for these intrinsics.
 	char*      String          = nullptr;         // The single string register.
+
+	// Voice acting: tracks how the String register was built via addsi/addsv.
+	// Each entry is (func_id, offset) where offset >= 0 is addsi, or VOICE_TRACE_ADDSV.
+	static constexpr int VOICE_TRACE_ADDSV = -1;    // Marker for variable insertion.
+	std::vector<std::pair<int, int>> voice_string_trace;  // (func_id, offset) pairs.
+	static constexpr int VOICE_NO_FACE = -999;          // Sentinel: no face has been set yet.
+	int                  voice_current_face_npc = VOICE_NO_FACE; // NPC whose face is currently shown (via show_npc_face).
+
 	int        telekenesis_fun = -1;              // For next Usecode call from spell.
 
 	void append_string(const uint8* txt) {

@@ -366,6 +366,8 @@ void Conversation::show_npc_message(const char* msg) {
 	if (last_face_shown == -1) {
 		return;
 	}
+	// Voice playback is now triggered from say_string() in ucinternal.cc
+	// using usecode function ID + segment index as the key.
 	// Wait for any sprite effects to finish before showing text.
 	Effects_manager* eman = gwin->get_effects();
 	if (eman->has_active_sprites()) {
